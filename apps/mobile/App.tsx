@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, AppState, type AppStateStatus, FlatList, Linking, LogBox, PermissionsAndroid, Platform, StatusBar, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { registerGlobals } from "@livekit/react-native";
+import { RTCAudioSession } from "@livekit/react-native-webrtc";
 import type { Channel as SDKChannel, Message as SDKMessage, Server as SDKServer, User as SDKUser } from "stoat.js";
 import * as ImagePicker from "expo-image-picker";
 import { discoverInstance, registerAccount } from "@radio/core";
@@ -40,6 +41,7 @@ import {
 } from "./src/stoat-api";
 import { PALETTE } from "./src/ui/theme";
 import { VoiceRoomController, type VoiceSnapshot } from "./src/voice-room";
+import { micForeground } from "./modules/mic-foreground/src";
 
 registerGlobals();
 
@@ -821,6 +823,51 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (Platform.OS !== "ios") return;
+
+    const resumeVoice = (reason: string) => {
+      const controller = voiceRef.current;
+      if (!controller) return;
+      void controller.ensureConnected().catch((error) => {
+        addLog(`${reason}后恢复语音失败：${errorMessage(error)}`, "err");
+      });
+    };
+
+    const callEnded = micForeground.addListener("onCallEnded", () => {
+      const controller = voiceRef.current;
+      if (!controller) return;
+      void controller.leave().catch((error) => {
+        addLog(`系统结束通话时清理失败：${errorMessage(error)}`, "err");
+      });
+    });
+    const callMuted = micForeground.addListener("onCallMuted", ({ muted: nextMuted }) => {
+      const controller = voiceRef.current;
+      if (!controller) return;
+      void controller.setMutedFromSystem(nextMuted).catch((error) => {
+        addLog(`系统静音同步失败：${errorMessage(error)}`, "err");
+      });
+    });
+    const audioActivated = micForeground.addListener("onAudioSessionActivated", () => {
+      RTCAudioSession.audioSessionDidActivate();
+      resumeVoice("音频会话恢复");
+    });
+    const audioDeactivated = micForeground.addListener("onAudioSessionDeactivated", () => {
+      RTCAudioSession.audioSessionDidDeactivate();
+    });
+    const audioInterrupted = micForeground.addListener("onAudioInterrupted", ({ phase, shouldResume }) => {
+      if (phase === "ended" && shouldResume) resumeVoice("系统音频中断结束");
+    });
+
+    return () => {
+      callEnded.remove();
+      callMuted.remove();
+      audioActivated.remove();
+      audioDeactivated.remove();
+      audioInterrupted.remove();
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
@@ -864,6 +911,12 @@ export default function App() {
           } catch (err) {
             console.warn("[AppState] 唤醒重连异常兜底:", err);
           }
+        }
+        const controller = voiceRef.current;
+        if (controller) {
+          void controller.ensureConnected().catch((error) => {
+            addLog(`解锁唤醒后恢复语音失败：${errorMessage(error)}`, "err");
+          });
         }
       }
       lastState = nextState;

@@ -26,7 +26,7 @@ Radio 是一个基于 React Native 与 Expo 的移动客户端，用于连接自
 └── package.json                 # 工作区脚本
 ```
 
-原生 `android/` 和 `ios/` 目录由 Expo prebuild 生成，故不纳入版本控制。
+原生 `android/` 和 `ios/` 目录由 Expo prebuild 生成，故不纳入版本控制。iOS 工作区只在 macOS 本机生成并由 Xcode 打开；Android debug APK 则由 GitHub Actions 自动构建。
 
 ## 环境要求
 
@@ -69,6 +69,15 @@ pnpm android:debug
 pnpm --filter @radio/mobile exec expo prebuild --platform ios --no-install
 ```
 
+生成可由 Xcode 打开的工作区并安装 Pods：
+
+```bash
+pnpm --filter @radio/mobile exec expo prebuild --platform ios
+open apps/mobile/ios/Radio.xcworkspace
+```
+
+在 Xcode 中选择已连接的真机和 `Radio` scheme 后运行即可安装。该工作区是本机生成文件，不能提交；若修改 `app.json`、Expo 插件或原生模块，请重新运行上述命令。
+
 在发布前，请把 [`apps/mobile/app.json`](apps/mobile/app.json) 中的 `com.example.radio` 替换为你自己拥有的 Android package 与 iOS bundle identifier。
 
 ## 实例与发布配置
@@ -86,17 +95,16 @@ pnpm --filter @radio/mobile exec expo prebuild --platform ios --no-install
 
 - `.gitignore` 排除依赖缓存、Expo 状态、生成的原生工程、签名材料、环境变量、日志和安装包。
 - 本仓库不包含服务器部署脚本、SSH 配置、云端地址、真实测试账号或端到端生产测试工具。
-- GitHub Actions 只执行依赖安装、测试、静态检查和 debug 构建；不部署服务，也不需要云端 Secret。
+- GitHub Actions 执行依赖安装、测试、静态检查和 debug APK 构建；构建产物保留 14 天，不部署服务，也不需要云端 Secret。
 
 ## 持续集成
 
-每次 push 和 pull request 会执行：
+每次 push、pull request 或手动触发会执行：
 
 1. `pnpm install --frozen-lockfile`
 2. `pnpm verify`
-3. Expo Android prebuild 与 debug APK 构建
+3. Expo Android prebuild 与 debug APK 构建，并上传可下载的 `app-debug.apk`
 
 ## 许可证
 
 本项目采用 MIT 许可证。
-

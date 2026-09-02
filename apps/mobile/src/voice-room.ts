@@ -45,6 +45,7 @@ export class VoiceRoomController {
   private connectAbort: AbortController | null = null;
   private operation = 0;
   private reconnectAttempt = 0;
+  private systemCallStarted = false;
   private wanted = false;
   private snapshot: VoiceSnapshot = { state: "idle", members: [] };
 
@@ -80,7 +81,7 @@ export class VoiceRoomController {
     await this.disposeRoom();
     await activeConnect?.catch(() => undefined);
     await AudioSession.stopAudioSession();
-    micForeground.stop();
+    this.stopSystemCall();
     this.channelId = null;
     this.remoteMuted.clear();
     this.setSnapshot({ state: "idle", members: [] });
@@ -91,6 +92,17 @@ export class VoiceRoomController {
     if (!room) return;
     await room.localParticipant.setMicrophoneEnabled(!muted);
     micForeground.setMuted(muted);
+    this.emitMembers();
+  }
+
+  /**
+   * 由 iOS CallKit 的系统静音按钮触发。这里不再反向调用 CallKit，避免重复
+   * 的 CXSetMutedCallAction 形成事件回环。
+   */
+  async setMutedFromSystem(muted: boolean): Promise<void> {
+    const room = this.room;
+    if (!room) return;
+    await room.localParticipant.setMicrophoneEnabled(!muted);
     this.emitMembers();
   }
 
@@ -124,6 +136,10 @@ export class VoiceRoomController {
     const abortController = new AbortController();
     this.connectAbort = abortController;
     try {
+      // Android 必须在 Activity 仍可见时启动 microphone FGS；iOS 同时在此向
+      // CallKit 注册持续通话。这样用户在连接阶段立即锁屏也不会错过保活窗口。
+      const systemCallWasStarted = this.systemCallStarted;
+      const systemCallStarted = this.startSystemCall();
       await AudioSession.startAudioSession();
       this.assertCurrent(operation);
       let call: Awaited<ReturnType<typeof joinCall>>;
@@ -156,11 +172,12 @@ export class VoiceRoomController {
       this.assertCurrent(operation);
       await room.localParticipant.publishTrack(microphone, { source: Track.Source.Microphone });
       this.assertCurrent(operation);
-      const serviceStarted = micForeground.start(this.channelName);
-      this.options.onLog?.(
-        serviceStarted ? "系统级通话服务已启动（已开启防锁屏休眠与断网保护）" : "系统级通话服务启动失败，语音仍保持连接",
-        serviceStarted ? "ok" : "err"
-      );
+      if (!systemCallWasStarted) {
+        this.options.onLog?.(
+          systemCallStarted ? "系统级通话服务已启动（已开启防锁屏休眠与断网保护）" : "系统级通话服务启动失败，语音仍保持连接",
+          systemCallStarted ? "ok" : "err"
+        );
+      }
       this.reconnectAttempt = 0;
       this.startMemberPoll();
       this.setSnapshot({ state: "connected", members: this.buildMembers() });
@@ -169,8 +186,13 @@ export class VoiceRoomController {
       if (error instanceof VoiceOperationCancelled) return;
       const message = error instanceof Error ? error.message : String(error);
       this.setSnapshot({ state: "error", members: [], error: message });
-      if (this.wanted && isRetriableVoiceError(error)) this.scheduleReconnect();
-      else this.wanted = false;
+      if (this.wanted && isRetriableVoiceError(error)) {
+        this.scheduleReconnect();
+      } else {
+        this.wanted = false;
+        this.stopSystemCall();
+        await AudioSession.stopAudioSession().catch(() => undefined);
+      }
       throw error;
     } finally {
       if (this.connectAbort === abortController) this.connectAbort = null;
@@ -227,12 +249,27 @@ export class VoiceRoomController {
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       try {
-        await this.disposeRoom();
-        await this.connect(this.operation);
+        await this.ensureConnected();
       } catch {
         this.scheduleReconnect();
       }
     }, delay);
+  }
+
+  /**
+   * 后台音频或 App 恢复后主动校验 LiveKit 房间。不能只依赖后台定时器：iOS
+   * 可能在音频中断期间暂停 JS，导致原定的重连回调直到解锁后才有机会运行。
+   */
+  async ensureConnected(): Promise<void> {
+    if (!this.wanted || !this.channelId) return;
+    if (this.activeConnect) {
+      await this.activeConnect.catch(() => undefined);
+      return;
+    }
+    if (this.room && this.snapshot.state === "connected") return;
+    this.clearReconnectTimer();
+    await this.disposeRoom();
+    await this.connect(this.operation);
   }
 
   private async disposeRoom(): Promise<void> {
@@ -288,8 +325,20 @@ export class VoiceRoomController {
     await this.disposeRoom();
     await activeConnect?.catch(() => undefined);
     await AudioSession.stopAudioSession().catch(() => undefined);
-    micForeground.stop();
+    this.stopSystemCall();
     this.remoteMuted.clear();
+  }
+
+  private startSystemCall(): boolean {
+    if (this.systemCallStarted) return true;
+    this.systemCallStarted = micForeground.start(this.channelName);
+    return this.systemCallStarted;
+  }
+
+  private stopSystemCall(): void {
+    if (!this.systemCallStarted) return;
+    micForeground.stop();
+    this.systemCallStarted = false;
   }
 
   private emitMembers(): void {

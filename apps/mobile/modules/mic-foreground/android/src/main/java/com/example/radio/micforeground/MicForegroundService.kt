@@ -109,7 +109,9 @@ class MicForegroundService : Service() {
       ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fallbackType)
     }
 
-    return START_STICKY
+    // RN/LiveKit 进程被系统杀死后无法只靠本服务恢复房间和短时令牌；避免服务
+    // 被粘性重启后留下一个“通话中”但实际无媒体连接的幽灵通知。
+    return START_NOT_STICKY
   }
 
   private fun acquireLocks() {
@@ -118,7 +120,8 @@ class MicForegroundService : Service() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Radio:VoiceCallWakeLock").apply {
           setReferenceCounted(false)
-          acquire(6 * 60 * 60 * 1000L) // 保护上限 6 小时
+          // 与前台通话服务同寿命。onDestroy 会显式释放；进程被杀时系统也会回收。
+          acquire()
         }
       } catch (e: Throwable) {
         e.printStackTrace()

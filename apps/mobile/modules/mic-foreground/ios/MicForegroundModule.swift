@@ -8,7 +8,7 @@ public class MicForegroundModule: Module {
   public func definition() -> ModuleDefinition {
     Name("MicForeground")
 
-    Events("onCallEnded", "onCallMuted")
+    Events("onCallEnded", "onCallMuted", "onAudioSessionActivated", "onAudioSessionDeactivated", "onAudioInterrupted")
 
     OnCreate {
       self.manager.module = self
@@ -43,6 +43,18 @@ public class MicForegroundModule: Module {
   func notifyCallMuted(muted: Bool) {
     sendEvent("onCallMuted", ["muted": muted])
   }
+
+  func notifyAudioSessionActivated() {
+    sendEvent("onAudioSessionActivated", [:])
+  }
+
+  func notifyAudioSessionDeactivated() {
+    sendEvent("onAudioSessionDeactivated", [:])
+  }
+
+  func notifyAudioInterrupted(phase: String, shouldResume: Bool) {
+    sendEvent("onAudioInterrupted", ["phase": phase, "shouldResume": shouldResume])
+  }
 }
 
 class CallKitManager: NSObject, CXProviderDelegate {
@@ -51,6 +63,7 @@ class CallKitManager: NSObject, CXProviderDelegate {
   private var callController = CXCallController()
   private var currentCallUUID: UUID?
   private var isCallActive = false
+  private var audioInterruptionObserver: NSObjectProtocol?
 
   func setupCallKit() {
     let config = CXProviderConfiguration(localizedName: "Radio")
@@ -64,14 +77,26 @@ class CallKitManager: NSObject, CXProviderDelegate {
 
     provider = CXProvider(configuration: config)
     provider?.setDelegate(self, queue: DispatchQueue.main)
+
+    audioInterruptionObserver = NotificationCenter.default.addObserver(
+      forName: AVAudioSession.interruptionNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: .main
+    ) { [weak self] notification in
+      self?.handleAudioInterruption(notification)
+    }
+  }
+
+  deinit {
+    if let observer = audioInterruptionObserver {
+      NotificationCenter.default.removeObserver(observer)
+    }
   }
 
   func startCall(channelName: String) -> Bool {
     let uuid = UUID()
     self.currentCallUUID = uuid
     self.isCallActive = true
-
-    configureAudioSession()
 
     let handle = CXHandle(type: .generic, value: channelName)
     let startAction = CXStartCallAction(call: uuid, handle: handle)
@@ -113,7 +138,6 @@ class CallKitManager: NSObject, CXProviderDelegate {
       }
     }
 
-    resetAudioSession()
     return true
   }
 
@@ -125,35 +149,38 @@ class CallKitManager: NSObject, CXProviderDelegate {
     return true
   }
 
-  private func configureAudioSession() {
-    do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
-      try session.setActive(true, options: .notifyOthersOnDeactivation)
-    } catch {
-      print("[Radio CallKit] configureAudioSession error: \(error.localizedDescription)")
+  private func handleAudioInterruption(_ notification: Notification) {
+    guard let userInfo = notification.userInfo,
+          let rawType = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+          let type = AVAudioSession.InterruptionType(rawValue: rawType) else {
+      return
     }
-  }
 
-  private func resetAudioSession() {
-    do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setActive(false, options: .notifyOthersOnDeactivation)
-    } catch {
-      print("[Radio CallKit] resetAudioSession error: \(error.localizedDescription)")
+    if type == .began {
+      module?.notifyAudioInterrupted(phase: "began", shouldResume: false)
+      return
     }
+
+    let rawOptions = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+    let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+    module?.notifyAudioInterrupted(
+      phase: "ended",
+      shouldResume: options.contains(.shouldResume)
+    )
   }
 
   // MARK: - CXProviderDelegate
 
   func providerDidReset(_ provider: CXProvider) {
+    let wasActive = isCallActive
     isCallActive = false
     currentCallUUID = nil
-    resetAudioSession()
+    if wasActive {
+      module?.notifyCallEnded()
+    }
   }
 
   func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-    configureAudioSession()
     provider.reportOutgoingCall(with: action.callUUID, connectedAt: Date())
     action.fulfill()
   }
@@ -161,16 +188,9 @@ class CallKitManager: NSObject, CXProviderDelegate {
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
     isCallActive = false
     currentCallUUID = nil
-    resetAudioSession()
     action.fulfill()
 
     module?.notifyCallEnded()
-
-    if let url = URL(string: "radio://voice/stop") {
-      DispatchQueue.main.async {
-        UIApplication.shared.open(url, options: [:], completionHandler: nil)
-      }
-    }
   }
 
   func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
@@ -179,8 +199,10 @@ class CallKitManager: NSObject, CXProviderDelegate {
   }
 
   func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    module?.notifyAudioSessionActivated()
   }
 
   func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+    module?.notifyAudioSessionDeactivated()
   }
 }

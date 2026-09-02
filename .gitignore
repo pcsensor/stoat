@@ -6,6 +6,7 @@ node_modules/
 .expo/
 .expo-shared/
 .metro-health-check*
+.expo-dev-client-id
 dist/
 build/
 web-build/
@@ -14,11 +15,23 @@ apps/mobile/ios/
 **/.gradle/
 **/.kotlin/
 **/build/
+**/DerivedData/
+**/Pods/
+**/.swiftpm/
+**/*.xcarchive/
+**/*.xcresult/
 
 # Signing material, credentials, and local configuration
 .env
 .env.*
 secrets.env
+*.secret
+*.credentials
+credentials.json
+service-account*.json
+apps/mobile/google-services.json
+apps/mobile/GoogleService-Info.plist
+apps/mobile/keystore.properties
 *.local
 **/local.properties
 **/xcuserdata/
@@ -30,12 +43,17 @@ secrets.env
 *.mobileprovision
 *.pem
 *.key
+*.csr
 
 # Build outputs, test output, and logs
 *.apk
 *.aab
 *.ipa
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 coverage/
 playwright-report/
 test-results/

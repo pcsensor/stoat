@@ -3,7 +3,7 @@
  * 进语音频道时 start，离开时 stop。
  * 包含 Android 系统级通话识别、WakeLock 防锁屏断网、WifiLock 与电池优化检测。
  */
-import { requireOptionalNativeModule } from "expo-modules-core";
+import { requireOptionalNativeModule, type EventSubscription } from "expo-modules-core";
 import { Platform } from "react-native";
 
 interface MicForegroundNative {
@@ -14,9 +14,24 @@ interface MicForegroundNative {
   requestIgnoreBatteryOptimization(): boolean;
 }
 
-const native: MicForegroundNative | null =
+interface MicForegroundEvents {
+  onCallEnded: () => void;
+  onCallMuted: (event: { muted: boolean }) => void;
+  onAudioSessionActivated: () => void;
+  onAudioSessionDeactivated: () => void;
+  onAudioInterrupted: (event: { phase: "began" | "ended"; shouldResume: boolean }) => void;
+}
+
+type MicForegroundNativeModule = MicForegroundNative & {
+  addListener<EventName extends keyof MicForegroundEvents>(
+    eventName: EventName,
+    listener: MicForegroundEvents[EventName]
+  ): EventSubscription;
+};
+
+const native: MicForegroundNativeModule | null =
   Platform.OS === "android" || Platform.OS === "ios"
-    ? requireOptionalNativeModule<MicForegroundNative>("MicForeground")
+    ? requireOptionalNativeModule<MicForegroundNativeModule>("MicForeground")
     : null;
 
 export const micForeground = {
@@ -59,5 +74,13 @@ export const micForeground = {
     } catch {
       return false;
     }
+  },
+  addListener<EventName extends keyof MicForegroundEvents>(
+    eventName: EventName,
+    listener: MicForegroundEvents[EventName]
+  ): EventSubscription {
+    // 原生模块缺失时（Expo Go / Web）返回可安全清理的空订阅。
+    if (!native) return { remove: () => undefined };
+    return native.addListener(eventName, listener);
   },
 };
