@@ -1,0 +1,85 @@
+name: Android signed release APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Verify and build offline release APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - name: Set up Node.js and pnpm cache
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Restore Android upload key
+        env:
+          RADIO_UPLOAD_STORE_BASE64: ${{ secrets.RADIO_UPLOAD_STORE_BASE64 }}
+          RADIO_UPLOAD_STORE_PASSWORD: ${{ secrets.RADIO_UPLOAD_STORE_PASSWORD }}
+          RADIO_UPLOAD_KEY_ALIAS: ${{ secrets.RADIO_UPLOAD_KEY_ALIAS }}
+          RADIO_UPLOAD_KEY_PASSWORD: ${{ secrets.RADIO_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for secret_name in \
+            RADIO_UPLOAD_STORE_BASE64 \
+            RADIO_UPLOAD_STORE_PASSWORD \
+            RADIO_UPLOAD_KEY_ALIAS \
+            RADIO_UPLOAD_KEY_PASSWORD; do
+            if [ -z "${!secret_name}" ]; then
+              echo "Missing required secret: $secret_name" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          printf '%s' "$RADIO_UPLOAD_STORE_BASE64" | base64 --decode > "$RUNNER_TEMP/radio-upload.jks"
+          chmod 600 "$RUNNER_TEMP/radio-upload.jks"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests and type checks
+        run: pnpm verify
+
+      - name: Generate native Android project and assemble signed release APK
+        env:
+          RADIO_UPLOAD_STORE_FILE: ${{ runner.temp }}/radio-upload.jks
+          RADIO_UPLOAD_STORE_PASSWORD: ${{ secrets.RADIO_UPLOAD_STORE_PASSWORD }}
+          RADIO_UPLOAD_KEY_ALIAS: ${{ secrets.RADIO_UPLOAD_KEY_ALIAS }}
+          RADIO_UPLOAD_KEY_PASSWORD: ${{ secrets.RADIO_UPLOAD_KEY_PASSWORD }}
+        run: pnpm android:release
+
+      - name: Upload offline release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: radio-android-release-apk
+          path: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30

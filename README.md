@@ -82,28 +82,35 @@ open apps/mobile/ios/Radio.xcworkspace
 
 ## 实例与发布配置
 
-应用本身不读取或提交 `.env` 文件。若构建 Android release 包，发布环境需要通过安全的 CI 变量或本机密钥管理提供：
+应用本身不读取或提交 `.env` 文件。GitHub Actions 构建离线可运行的 Android release APK；在首次运行工作流前，于 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置以下 Repository secrets：
 
-- `RADIO_UPLOAD_STORE_FILE`
+- `RADIO_UPLOAD_STORE_BASE64`：上传密钥库文件的单行 Base64 内容
 - `RADIO_UPLOAD_STORE_PASSWORD`
 - `RADIO_UPLOAD_KEY_ALIAS`
 - `RADIO_UPLOAD_KEY_PASSWORD`
 
-不要把这些变量、keystore、测试密码、会话 token、API key、私钥或设备日志写入仓库。公共实例应使用 HTTPS/WSS，并在服务端实施认证、限流与常规安全更新。
+可在任意受信任且安装 JDK 的机器一次性生成密钥；生成的 `.jks` 已被 Git 忽略，务必离线备份，不要上传或提交：
+
+```bash
+keytool -genkeypair -v -keystore radio-upload.jks -storetype JKS -alias radio-upload -keyalg RSA -keysize 2048 -validity 10000
+base64 < radio-upload.jks | tr -d '\n'
+```
+
+将第二条命令的输出保存为 `RADIO_UPLOAD_STORE_BASE64`，并将创建密钥时设置的密码和别名分别存入其余三个 Secret。不要把 keystore、测试密码、会话 token、API key、私钥或设备日志写入仓库。公共实例应使用 HTTPS/WSS，并在服务端实施认证、限流与常规安全更新。
 
 ## 安全与仓库卫生
 
 - `.gitignore` 排除依赖缓存、Expo 状态、生成的原生工程、签名材料、环境变量、日志和安装包。
 - 本仓库不包含服务器部署脚本、SSH 配置、云端地址、真实测试账号或端到端生产测试工具。
-- GitHub Actions 执行依赖安装、测试、静态检查和 debug APK 构建；构建产物保留 14 天，不部署服务，也不需要云端 Secret。
+- GitHub Actions 在 `main` 分支推送或手动触发时，执行依赖安装、测试、静态检查和已签名的 release APK 构建；构建产物保留 30 天，不部署服务。
 
 ## 持续集成
 
-每次 push、pull request 或手动触发会执行：
+每次推送至 `main` 或手动触发会执行：
 
 1. `pnpm install --frozen-lockfile`
 2. `pnpm verify`
-3. Expo Android prebuild 与 debug APK 构建，并上传可下载的 `app-debug.apk`
+3. Expo Android prebuild 与已签名 Release APK 构建，并上传可离线运行的 `app-release.apk`
 
 ## 许可证
 
