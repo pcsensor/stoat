@@ -1,0 +1,17 @@
+{
+  "name": "radio",
+  "private": true,
+  "version": "0.0.0",
+  "description": "用于自建 Stoat 兼容实例的 iOS/Android 客户端",
+  "packageManager": "pnpm@11.24.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "typecheck": "pnpm -r typecheck",
+    "mobile": "pnpm --filter @radio/mobile start",
+    "mobile:bundle": "pnpm --filter @radio/mobile exec expo export --platform android --output-dir /tmp/radio-android-bundle",
+    "android:debug": "pnpm --filter @radio/mobile exec expo prebuild --platform android --no-install && cd apps/mobile/android && ./gradlew assembleDebug",
+    "android:release": "pnpm --filter @radio/mobile exec expo prebuild --platform android --no-install && cd apps/mobile/android && ./gradlew assembleRelease",
+    "verify": "pnpm test && pnpm typecheck && pnpm mobile:bundle"
+  }
+}

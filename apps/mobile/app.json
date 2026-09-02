@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "Radio",
+    "slug": "radio",
+    "scheme": "radio",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.radio",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio",
+          "voip"
+        ],
+        "NSMicrophoneUsageDescription": "Radio 需要访问麦克风以在语音频道中讲话。",
+        "NSPhotoLibraryUsageDescription": "Radio 需要访问相册以发送图片。",
+        "NSCameraUsageDescription": "Radio 需要访问相机以拍摄并发送图片。"
+      }
+    },
+    "android": {
+      "package": "com.example.radio",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MICROPHONE",
+        "FOREGROUND_SERVICE_PHONE_CALL",
+        "MANAGE_OWN_CALLS",
+        "POST_NOTIFICATIONS",
+        "WAKE_LOCK",
+        "READ_MEDIA_IMAGES"
+      ]
+    },
+    "plugins": [
+      "./plugins/withLiveKitSetup",
+      "./plugins/withReleaseSigning",
+      [
+        "@livekit/react-native-expo-plugin",
+        {
+          "android": {
+            "audioType": "communication"
+          }
+        }
+      ],
+      "@config-plugins/react-native-webrtc",
+      "expo-secure-store"
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+# Dependencies and local package caches
+node_modules/
+.pnpm-store/
+
+# Expo, Metro, and generated native projects
+.expo/
+.expo-shared/
+.metro-health-check*
+dist/
+build/
+web-build/
+apps/mobile/android/
+apps/mobile/ios/
+**/.gradle/
+**/.kotlin/
+**/build/
+
+# Signing material, credentials, and local configuration
+.env
+.env.*
+secrets.env
+*.local
+**/local.properties
+**/xcuserdata/
+**/*.xcuserstate
+*.keystore
+*.jks
+*.p12
+*.p8
+*.mobileprovision
+*.pem
+*.key
+
+# Build outputs, test output, and logs
+*.apk
+*.aab
+*.ipa
+*.log
+coverage/
+playwright-report/
+test-results/
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+.vscode/
+.idea/

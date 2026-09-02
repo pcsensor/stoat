@@ -1,0 +1,13 @@
+{
+  "name": "@radio/voice",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@radio/core": "workspace:*"
+  },
+  "devDependencies": { "typescript": "~6.0.3" }
+}
