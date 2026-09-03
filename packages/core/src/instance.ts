@@ -15,8 +15,19 @@ export interface InstanceEndpoints {
   livekit?: string;
 }
 
+export interface InstanceAvailability {
+  /** 以下标记为 true 仅当服务端明确公布了该服务；false 表示 endpoints 中是兼容 fallback，不保证可用。 */
+  ws: boolean;
+  autumn: boolean;
+  january: boolean;
+  gifbox: boolean;
+  livekit: boolean;
+}
+
 export interface InstanceConfig {
   endpoints: InstanceEndpoints;
+  /** 各端点是否由服务端明确公布（false = 本地拼出的兼容地址）。 */
+  availability: InstanceAvailability;
   features: JsonObject;
   version?: string;
   raw: JsonObject;
@@ -46,19 +57,29 @@ export function normalizeDomain(input: string): string {
   return url.origin;
 }
 
-/** 发现实例并读取其完整配置。404 表示该地址不是 Stoat 实例。 */
-export async function discoverInstance(input: string, signal?: AbortSignal): Promise<InstanceConfig | null> {
+/** 发现实例并读取其完整配置。404 表示该地址不是 Stoat 实例。well-known 请求自带超时，避免冷启动无限挂起。 */
+export async function discoverInstance(input: string, signal?: AbortSignal, timeoutMs = 15_000): Promise<InstanceConfig | null> {
   const base = normalizeDomain(input);
   const wellKnownUrl = `${base}/.well-known/stoat`;
-  const response = await fetch(wellKnownUrl, { signal });
-  if (response.status === 404) return null;
-  const wellKnown = await readJsonObject(response, wellKnownUrl);
-  const api = readString(wellKnown, "api");
-  if (!api) throw new Error("实例发现响应缺少 api 地址");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`实例发现超时（${timeoutMs}ms）：${base}`)), timeoutMs);
+  const abort = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) controller.abort(signal.reason);
+  try {
+    const response = await fetch(wellKnownUrl, { signal: controller.signal });
+    if (response.status === 404) return null;
+    const wellKnown = await readJsonObject(response, wellKnownUrl);
+    const api = readString(wellKnown, "api");
+    if (!api) throw new Error("实例发现响应缺少 api 地址");
 
-  const apiClient = new ApiClient({ baseUrl: api });
-  const raw = await apiClient.get<JsonObject>("/", { signal });
-  return parseInstanceConfig(api, raw);
+    const apiClient = new ApiClient({ baseUrl: api });
+    const raw = await apiClient.get<JsonObject>("/", { signal });
+    return parseInstanceConfig(api, raw);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 /** 从实例配置中读取服务地址；只在旧实例未公布地址时使用兼容 fallback。 */
@@ -76,14 +97,27 @@ export function parseInstanceConfig(apiUrl: string, raw: JsonObject): InstanceCo
     .map((node) => (asObject(node).public_url ?? asObject(node).url))
     .find((value): value is string => typeof value === "string");
 
-  const ws = readUrl(raw, "ws") ?? `${toWebSocketOrigin(origin)}/ws`;
-  const autumn = readUrl(raw, "autumn") ?? readUrl(autumnFeature, "url") ?? `${origin}/autumn`;
-  const january = readUrl(raw, "january") ?? readUrl(januaryFeature, "url") ?? `${origin}/january`;
-  const gifbox = readUrl(raw, "gifbox") ?? readUrl(gifboxFeature, "url") ?? `${origin}/gifbox`;
-  const livekit = readUrl(raw, "livekit") ?? firstLivekitUrl ?? `${toWebSocketOrigin(origin)}/livekit`;
+  const advertisedWs = readUrl(raw, "ws");
+  const advertisedAutumn = readUrl(raw, "autumn") ?? readUrl(autumnFeature, "url");
+  const advertisedJanuary = readUrl(raw, "january") ?? readUrl(januaryFeature, "url");
+  const advertisedGifbox = readUrl(raw, "gifbox") ?? readUrl(gifboxFeature, "url");
+  const advertisedLivekit = readUrl(raw, "livekit") ?? firstLivekitUrl;
+
+  const ws = advertisedWs ?? `${toWebSocketOrigin(origin)}/ws`;
+  const autumn = advertisedAutumn ?? `${origin}/autumn`;
+  const january = advertisedJanuary ?? `${origin}/january`;
+  const gifbox = advertisedGifbox ?? `${origin}/gifbox`;
+  const livekit = advertisedLivekit ?? `${toWebSocketOrigin(origin)}/livekit`;
 
   return {
     endpoints: { api, ws, autumn, january, gifbox, livekit },
+    availability: {
+      ws: advertisedWs !== undefined,
+      autumn: advertisedAutumn !== undefined,
+      january: advertisedJanuary !== undefined,
+      gifbox: advertisedGifbox !== undefined,
+      livekit: advertisedLivekit !== undefined,
+    },
     features,
     version: readString(raw, "version") ?? readString(raw, "version_string"),
     raw,
@@ -105,15 +139,24 @@ export async function login(
   return data as LoginResponse;
 }
 
+/**
+ * 注册。invite 为空时不发送该字段，兼容开放注册的实例；
+ * 需要邀请码的实例会由服务端返回明确错误。
+ */
 export async function registerAccount(
   endpoints: InstanceEndpoints,
   email: string,
   password: string,
-  invite: string,
+  invite?: string,
   signal?: AbortSignal
 ): Promise<RegisterResponse> {
   const api = new ApiClient({ baseUrl: endpoints.api });
-  return api.post<RegisterResponse>("/auth/account/create", { email, password, invite }, { signal });
+  const trimmedInvite = invite?.trim();
+  return api.post<RegisterResponse>(
+    "/auth/account/create",
+    trimmedInvite ? { email, password, invite: trimmedInvite } : { email, password },
+    { signal }
+  );
 }
 
 export async function completeOnboarding(

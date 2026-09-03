@@ -1,8 +1,8 @@
 import { Platform } from "react-native";
 import { AudioSession } from "@livekit/react-native";
 import { Room, RoomEvent, Track, createLocalAudioTrack, type RemoteParticipant } from "livekit-client";
-import { ApiError, type InstanceConfig } from "@radio/core";
-import { joinCall } from "@radio/voice";
+import type { InstanceConfig } from "@radio/core";
+import { isAlreadyConnectedError, isRetriableVoiceError, joinCall } from "@radio/voice";
 import { micForeground } from "../modules/mic-foreground/src";
 
 export type AudioOutputDevice = "speaker" | "earpiece";
@@ -49,6 +49,7 @@ export class VoiceRoomController {
   private connectAbort: AbortController | null = null;
   private operation = 0;
   private reconnectAttempt = 0;
+  private sdkHealing = false;
   private systemCallStarted = false;
   private wanted = false;
   private userMuted = false;
@@ -71,6 +72,7 @@ export class VoiceRoomController {
     this.channelId = channelId;
     this.channelName = channelName;
     this.reconnectAttempt = 0;
+    this.sdkHealing = false;
     this.clearReconnectTimer();
     const operation = ++this.operation;
     await this.connect(operation);
@@ -78,6 +80,7 @@ export class VoiceRoomController {
 
   async leave(): Promise<void> {
     this.wanted = false;
+    this.sdkHealing = false;
     this.operation += 1;
     this.connectAbort?.abort();
     this.connectAbort = null;
@@ -192,8 +195,7 @@ export class VoiceRoomController {
       } catch (joinErr) {
         // 服务器仍记录为已连接（快速切换频道 / App崩溃后残留）
         // 自动以 forceDisconnect=true 重试一次，接管旧会话。
-        const msg = joinErr instanceof Error ? joinErr.message : String(joinErr);
-        if (!msg.includes("AlreadyConnected")) throw joinErr;
+        if (!isAlreadyConnectedError(joinErr)) throw joinErr;
         this.assertCurrent(operation);
         this.options.onLog?.("检测到旧语音会话，正在强制接管…", "info");
         call = await joinCall(this.options.instance.endpoints, this.options.sessionToken, channelId, {
@@ -275,20 +277,26 @@ export class VoiceRoomController {
       this.emitMembers();
     });
     room.on(RoomEvent.Reconnecting, () => {
+      this.sdkHealing = true;
       this.setSnapshot({ state: "reconnecting", members: this.buildMembers() });
       this.options.onLog?.("语音连接中断，正在重连…", "err");
     });
     room.on(RoomEvent.SignalReconnecting, () => {
+      this.sdkHealing = true;
       this.setSnapshot({ state: "reconnecting", members: this.buildMembers() });
     });
     room.on(RoomEvent.Reconnected, () => {
+      this.sdkHealing = false;
+      this.reconnectAttempt = 0;
+      this.clearReconnectTimer();
       this.options.onLog?.("语音连接已恢复", "ok");
       this.setSnapshot({ state: "connected", members: this.buildMembers() });
     });
     room.on(RoomEvent.Disconnected, () => {
       if (!this.wanted || room !== this.room) return;
+      this.sdkHealing = false;
       this.options.onLog?.("语音房间已断开，准备重新加入", "err");
-      this.setSnapshot({ state: "reconnecting", members: [] });
+      this.setSnapshot({ state: "reconnecting", members: this.buildMembers() });
       this.scheduleReconnect();
     });
   }
@@ -296,7 +304,7 @@ export class VoiceRoomController {
   private scheduleReconnect(): void {
     if (this.reconnectTimer || !this.wanted) return;
     this.reconnectAttempt += 1;
-    const delay = Math.min(1000 * 2 ** (this.reconnectAttempt - 1), 15_000);
+    const delay = reconnectDelayMs(this.reconnectAttempt);
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       try {
@@ -306,24 +314,20 @@ export class VoiceRoomController {
       }
     }, delay);
   }
-
-  /**
-   * 后台音频或 App 恢复后主动校验 LiveKit 房间。不能只依赖后台定时器：iOS
-   * 可能在音频中断期间暂停 JS，导致原定的重连回调直到解锁后才有机会运行。
-   */
   async ensureConnected(): Promise<void> {
     if (!this.wanted || !this.channelId) return;
     if (this.activeConnect) {
       await this.activeConnect.catch(() => undefined);
       return;
     }
-    if (this.room && this.snapshot.state === "connected") return;
+    // SDK 内部正在自愈则等待它；彻底断开（room 已无或 SDK 已放弃）才重建。
+    if (this.room && this.sdkHealing) return;
+    this.sdkHealing = false;
     this.clearReconnectTimer();
     await this.disposeRoom();
     const operation = ++this.operation;
     await this.connect(operation);
   }
-
   private async disposeRoom(): Promise<void> {
     this.clearMemberTimer();
     const room = this.room;
@@ -368,6 +372,7 @@ export class VoiceRoomController {
 
   private async cancelCurrentConnection(): Promise<void> {
     this.wanted = false;
+    this.sdkHealing = false;
     this.operation += 1;
     this.connectAbort?.abort();
     this.connectAbort = null;
@@ -453,12 +458,10 @@ export class VoiceRoomController {
 
 class VoiceOperationCancelled extends Error {}
 
-function isRetriableVoiceError(error: unknown): boolean {
-  if (error instanceof ApiError) return error.status === 408 || error.status === 429 || error.status >= 500;
-  const message = error instanceof Error ? error.message : String(error);
-  return !/permission|not authorized|forbidden|room.{0,12}full|microphone|denied|invalid|not found|unsupported/i.test(message);
+function reconnectDelayMs(attempt: number): number {
+  const capped = Math.min(1000 * 2 ** (attempt - 1), 15_000);
+  return Math.round(capped * (0.7 + Math.random() * 0.6));
 }
-
 function chooseLiveKitNode(instance: InstanceConfig): string {
   const features = instance.raw.features;
   const feature = features && typeof features === "object" && !Array.isArray(features) && "livekit" in features

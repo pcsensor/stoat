@@ -107,11 +107,11 @@ export function AuthScreen(props: AuthScreenProps) {
 
           {props.mode === "register" ? (
             <>
-              <Text style={styles.fieldLabel}>注册邀请码</Text>
+              <Text style={styles.fieldLabel}>注册邀请码（实例要求时填写）</Text>
               <BrutalInput
                 value={props.invite}
                 onChangeText={props.onInvite}
-                placeholder="一次性邀请码"
+                placeholder="开放注册可留空"
                 autoCapitalize="none"
                 onFocus={() => scrollRef.current?.scrollTo({ y: 350, animated: true })}
               />

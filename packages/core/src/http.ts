@@ -17,6 +17,18 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 会话凭证本身已失效（被服务端吊销/过期）。调用方应清除本地会话并引导重登。
+ * 网络故障、超时、服务端 5xx 一律返回 false：凭证可能完好，必须保留。
+ */
+export function isSessionInvalidError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    if (error.status === 401 || error.status === 403) return true;
+    return /invalid.?session|unauthori[sz]ed|unauthenticated|invalid.?token/i.test(JSON.stringify(error.body ?? ""));
+  }
+  return /invalid.?session|unauthori[sz]ed|unauthenticated/i.test(error instanceof Error ? error.message : String(error ?? ""));
+}
+
 export interface ApiClientOptions {
   baseUrl: string;
   sessionToken?: string;

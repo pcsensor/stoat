@@ -23,8 +23,31 @@ export interface ChatMessage {
   reactions: Array<[emoji: string, count: number, reactedByMe: boolean]>;
   attachments: ChatAttachment[];
   replyIds?: string[];
+  /** 首条引用的预览（兼容旧 UI）。 */
   replyPreview?: ReplyPreview;
+  /** 全部引用的预览，与 replyIds 一一对应；缺失的消息用占位表示。 */
+  replyPreviews?: ReplyPreview[];
   isSystem?: boolean;
+}
+
+/**
+ * 消息时间：当天只显示时分，跨天带上月日，跨年再带年份。
+ * 之前只显示时分，隔夜消息无法区分日期。
+ */
+export function formatMessageTime(createdAt: string | number | Date): string {
+  const date = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  if (sameDay) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.getMonth() + 1}-${date.getDate()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()} ${date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
 }
 
 export function formatSystemEvent(
@@ -39,7 +62,9 @@ export function formatSystemEvent(
     return rawSys;
   }
   if (!event) {
-    if (message.authorId === "00000000000000000000000000" || message.author?.username === "Revolt") {
+    // 兼容旧实例：系统消息可能以保留账号直接下发。新实例以 systemMessage 标记为准；
+    // 这里只认保留 ID，不再以用户名判断，避免冒名用户伪造系统横幅。
+    if (message.authorId === "00000000000000000000000000") {
       if (message.content) return message.content;
       return "系统通知";
     }
@@ -123,25 +148,20 @@ export function toChatMessage(
 ): ChatMessage {
   const systemText = formatSystemEvent(message, resolveUser);
   const isSystem = Boolean(systemText);
-  let replyPreview: ReplyPreview | undefined;
-  const replyId = message.replyIds?.[0];
-
-  if (replyId) {
-    const referenced = resolveMessage?.(replyId);
-    if (referenced) {
-      replyPreview = {
-        id: replyId,
-        author: referenced.author?.username ?? referenced.authorId ?? "用户",
-        content: referenced.content || (referenced.attachments?.length ? "[附件]" : "[消息]"),
-      };
-    } else {
-      replyPreview = {
-        id: replyId,
-        author: "引用消息",
-        content: "...",
-      };
-    }
-  }
+  const replyIds = message.replyIds ?? [];
+  const replyPreviews: ReplyPreview[] | undefined = replyIds.length
+    ? replyIds.map((replyId) => {
+        const referenced = resolveMessage?.(replyId);
+        if (referenced) {
+          return {
+            id: replyId,
+            author: referenced.author?.username ?? referenced.authorId ?? "用户",
+            content: referenced.content || (referenced.attachments?.length ? "[附件]" : "[消息]"),
+          };
+        }
+        return { id: replyId, author: "引用消息", content: "..." };
+      })
+    : undefined;
 
   return {
     id: message.id,
@@ -149,7 +169,7 @@ export function toChatMessage(
     authorId: message.authorId,
     content: isSystem ? systemText! : message.content,
     mine: !isSystem && message.authorId === myUserId,
-    time: new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    time: formatMessageTime(message.createdAt),
     reactions: reactionsOf(message, myUserId),
     attachments: (message.attachments ?? []).map((file) => ({
       id: file.id,
@@ -157,8 +177,9 @@ export function toChatMessage(
       isImage: (file.contentType ?? "").startsWith("image/"),
       filename: file.filename,
     })),
-    replyIds: message.replyIds,
-    replyPreview,
+    replyIds: replyIds.length ? replyIds : undefined,
+    replyPreview: replyPreviews?.[0],
+    replyPreviews,
     isSystem,
   };
 }

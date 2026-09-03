@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ApiError, joinUrl, normalizeDomain, parseInstanceConfig } from "../packages/core/src/index.ts";
+import { ApiError, isSessionInvalidError, joinUrl, normalizeDomain, parseInstanceConfig } from "../packages/core/src/index.ts";
 
 test("normalizeDomain accepts bare hosts and removes paths", () => {
   assert.equal(normalizeDomain(" chat.example.com/path?q=1 "), "https://chat.example.com");
@@ -43,4 +43,35 @@ test("joinUrl and ApiError preserve useful request context", () => {
   const error = new ApiError(403, "POST", "https://chat.example.com/api/channels/x", { type: "Forbidden" });
   assert.match(error.message, /403/);
   assert.match(error.message, /Forbidden/);
+});
+
+test("parseInstanceConfig marks advertised versus fallback services", () => {
+  const advertised = parseInstanceConfig("https://chat.example.com/api/", {
+    ws: "wss://events.example.com/socket",
+    autumn: "https://files.example.com",
+    features: { livekit: { nodes: [{ name: "near", public_url: "wss://voice.example.com" }] } },
+  });
+  assert.deepEqual(advertised.availability, {
+    ws: true,
+    autumn: true,
+    january: false,
+    gifbox: false,
+    livekit: true,
+  });
+  const bare = parseInstanceConfig("http://localhost:14702/api", { features: {} });
+  assert.deepEqual(bare.availability, {
+    ws: false,
+    autumn: false,
+    january: false,
+    gifbox: false,
+    livekit: false,
+  });
+});
+
+test("isSessionInvalidError only matches dead credentials", () => {
+  assert.equal(isSessionInvalidError(new ApiError(401, "GET", "https://x/api", { type: "Unauthorized" })), true);
+  assert.equal(isSessionInvalidError(new ApiError(500, "GET", "https://x/api", {})), false);
+  assert.equal(isSessionInvalidError(new ApiError(408, "GET", "https://x/api", {})), false);
+  assert.equal(isSessionInvalidError(new Error("fetch failed")), false);
+  assert.equal(isSessionInvalidError(new Error("InvalidSession")), true);
 });

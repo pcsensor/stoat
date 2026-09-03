@@ -39,12 +39,14 @@ export async function createChannel(
   api: ApiClient,
   serverId: string,
   type: "Text" | "Voice",
-  name: string
+  name: string,
+  options: { maxUsers?: number } = {}
 ): Promise<CreatedChannel> {
+  // 不再硬编码 max_users：缺省时完全交给服务端默认，避免客户端藏着一条隐形上限。
   const body = await api.post<JsonObject>(`/servers/${encodeURIComponent(serverId)}/channels`, {
     type,
     name,
-    ...(type === "Voice" ? { voice: { max_users: 10 } } : {}),
+    ...(type === "Voice" && options.maxUsers !== undefined ? { voice: { max_users: options.maxUsers } } : {}),
   });
   if (typeof body._id !== "string" || typeof body.name !== "string") throw new Error("创建频道响应无效");
   const voice = isObject(body.voice) ? (body.voice as CreatedChannel["voice"]) : undefined;

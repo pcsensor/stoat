@@ -293,7 +293,9 @@ function MessageBubble({
       >
         {message.replyPreview ? (
           <View style={styles.replyQuote}>
-            <Text style={styles.replyQuoteAuthor}>↩ @{message.replyPreview.author}:</Text>
+            <Text style={styles.replyQuoteAuthor}>
+              ↩ @{message.replyPreview.author}:{message.replyPreviews && message.replyPreviews.length > 1 ? `（等${message.replyPreviews.length}条引用）` : ""}
+            </Text>
             <Text style={styles.replyQuoteText} numberOfLines={1}>
               {message.replyPreview.content}
             </Text>

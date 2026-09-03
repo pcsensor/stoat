@@ -6,7 +6,7 @@ import { registerGlobals } from "@livekit/react-native";
 import { RTCAudioSession } from "@livekit/react-native-webrtc";
 import type { Channel as SDKChannel, Message as SDKMessage, Server as SDKServer, User as SDKUser } from "stoat.js";
 import * as ImagePicker from "expo-image-picker";
-import { discoverInstance, registerAccount } from "@radio/core";
+import { discoverInstance, isSessionInvalidError, normalizeDomain, registerAccount } from "@radio/core";
 import { ActivityDrawer, type ActivityLog } from "./src/components/ActivityDrawer";
 import { ChatView, type PendingAttachmentView, type ReplyingTarget } from "./src/components/ChatView";
 import { VoiceView } from "./src/components/VoiceView";
@@ -80,9 +80,11 @@ export default function App() {
   const [replyingTo, setReplyingTo] = useState<ReplyingTarget | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<ChatMessage[] | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [voice, setVoice] = useState<VoiceSnapshot>({ state: "idle", members: [], audioOutput: "speaker" });
+  const inviteChannelRef = useRef<string | null>(null);
 
   const sessionRef = useRef<StoatSession | null>(null);
   const apiRef = useRef<ReturnType<typeof createStoatApi> | null>(null);
@@ -139,9 +141,11 @@ export default function App() {
     setDraft("");
     setReplyingTo(null);
     setInviteCode("");
+    inviteChannelRef.current = null;
     setActionFor(null);
     setSearching(false);
     setSearchQuery("");
+    setSearchResults(null);
     setChannelDrawer(false);
     setActionModal(null);
   };
@@ -300,25 +304,54 @@ export default function App() {
       setAuthError("请填写实例地址、邮箱和密码。");
       return;
     }
-    if (authMode === "register" && !invite.trim()) {
-      setAuthError("注册需要一次性邀请码。");
+    let canonicalDomain: string;
+    try {
+      canonicalDomain = normalizeDomain(domain);
+    } catch (error) {
+      setAuthError(errorMessage(error));
       return;
+    }
+    if (canonicalDomain.startsWith("http://")) {
+      addLog("当前使用明文 http 连接，登录凭证可能被窃听；请改用 https 实例。", "err");
+    }
+    // 邀请码选填：开放注册的实例不需要，服务端需要时会返回明确错误。
+    const trimmedInvite = invite.trim();
+    let desiredUsername: string | undefined;
+    if (authMode === "register") {
+      try {
+        desiredUsername = normalizeUsername(username) ?? suggestUsername();
+      } catch (error) {
+        setAuthError(errorMessage(error));
+        return;
+      }
     }
     setBusy(true);
     try {
       await closeSession();
-      const instance = await discoverInstance(domain);
+      const instance = await discoverInstance(canonicalDomain);
       if (!instance) throw new Error("该地址没有提供 Stoat 实例发现配置");
       addLog(`已发现实例 ${instance.endpoints.api}`, "ok");
       if (authMode === "register") {
-        await registerAccount(instance.endpoints, email.trim(), password, invite.trim());
+        await registerAccount(instance.endpoints, email.trim(), password, trimmedInvite || undefined);
         addLog("注册成功，正在登录", "ok");
       }
       const session = await StoatSession.open(instance, email.trim(), password);
-      if (authMode === "register") {
-        await session.completeOnboarding(username.trim() || `radio${String(Date.now()).slice(-6)}`);
+      // 先落会话再做 Onboarding：Onboarding 失败不再销毁已成功的登录，
+      // 用户停留在工作区可重试，而不是被踢回登录页。
+      await activateSession(session, canonicalDomain);
+      const needsOnboarding = authMode === "register" || sessionRequiresOnboarding(session);
+      if (needsOnboarding && desiredUsername === undefined) {
+        desiredUsername = suggestUsername();
       }
-      await activateSession(session, domain.trim());
+      if (needsOnboarding && desiredUsername) {
+        try {
+          await session.completeOnboarding(desiredUsername);
+          addLog(`已完成初始化，用户名 ${desiredUsername}`, "ok");
+        } catch (error) {
+          addLog(`自动初始化用户名失败：${errorMessage(error)}，请稍后重试`, "err");
+          setActivityDrawer(true);
+        }
+      }
       addLog(`已连接为 ${session.client.user?.username ?? "用户"}`, "ok");
     } catch (error) {
       const message = errorMessage(error);
@@ -333,8 +366,12 @@ export default function App() {
 
   const doLogout = async () => {
     setBusy(true);
-    await clearStoredSession();
-    await closeSession();
+    try {
+      // 先请求服务端注销（需要内存中的会话），再清除本地凭证，保证两边一致。
+      await closeSession();
+    } finally {
+      await clearStoredSession();
+    }
     setEmail("");
     setPassword("");
     setInvite("");
@@ -446,9 +483,10 @@ export default function App() {
     setChat([]);
     setReplyingTo(null);
     setInviteCode("");
+    inviteChannelRef.current = null;
+    setSearchResults(null);
     setChannelDrawer(true);
   };
-
   const goHome = async () => {
     resetWorkspace();
   };
@@ -604,9 +642,11 @@ export default function App() {
     setPending([]);
     setReplyingTo(null);
     setInviteCode("");
+    inviteChannelRef.current = null;
     setActionFor(null);
     setSearching(false);
     setSearchQuery("");
+    setSearchResults(null);
     setHasMore(true);
     if (channel.isVoice && channel.type !== "DirectMessage") return;
     try {
@@ -622,6 +662,8 @@ export default function App() {
   };
 
   const loadOlderMessages = async () => {
+    // 搜索结果是独立快照：不分页、不合并回时间线，关闭搜索即回到原时间线。
+    if (searchResults) return;
     const channel = currentChannel;
     const before = chat[0]?.id;
     if (!channel || !before || loadingOlder || !hasMore) return;
@@ -646,7 +688,7 @@ export default function App() {
     try {
       const messages = await channel.search({ query, limit: 50, sort: "Latest" });
       const resolveUser = (id: string) => sessionRef.current?.client.users.get(id);
-      setChat(sortAndMapMessages(messages, sessionRef.current?.client.user?.id, resolveMessage, resolveUser));
+      setSearchResults(sortAndMapMessages(messages, sessionRef.current?.client.user?.id, resolveMessage, resolveUser));
       addLog(`搜索到 ${messages.length} 条消息`, "ok");
     } catch (error) {
       addLog(`搜索失败：${errorMessage(error)}`, "err");
@@ -691,7 +733,7 @@ export default function App() {
             ? {
                 id: uploaded.id,
                 url: uploaded.url,
-                isImage: true,
+                isImage: (uploaded.contentType ?? asset.mimeType ?? "image/jpeg").startsWith("image/"),
                 filename: asset.fileName ?? undefined,
                 progress: 1,
                 uploading: false,
@@ -807,17 +849,25 @@ export default function App() {
     if (!controller || !api) return;
     setBusy(true);
     try {
-      const textChannel = currentServer?.channels.find((item) => item.type === "TextChannel" && !item.isVoice);
-      if (textChannel) {
-        try {
-          setInviteCode(await createChannelInvite(api, textChannel.id));
-        } catch (error) {
-          addLog(`邀请码创建失败：${errorMessage(error)}`);
+      // 先走 openChannel：语音分支只重置聊天/搜索等视图状态，不拉取消息。
+      // 之前这里直接 setChannelId，导致旧文字频道的聊天记录配上语音频道 ID，发错地方。
+      await openChannel(channel);
+      await controller.join(channel.id, channel.name);
+      // 邀请码只为当前语音频道生成一次：之前每次加入都新建邀请，越积越多。
+      if (inviteChannelRef.current !== channel.id) {
+        const textChannel = currentServer?.channels.find((item) => item.type === "TextChannel" && !item.isVoice);
+        if (textChannel) {
+          try {
+            const code = await createChannelInvite(api, textChannel.id);
+            if (channelIdRef.current === channel.id) {
+              setInviteCode(code);
+              inviteChannelRef.current = channel.id;
+            }
+          } catch (error) {
+            addLog(`邀请码创建失败：${errorMessage(error)}`);
+          }
         }
       }
-      await controller.join(channel.id, channel.name);
-      channelIdRef.current = channel.id;
-      setChannelId(channel.id);
     } catch (error) {
       addLog(`进入语音失败：${errorMessage(error)}`, "err");
     } finally {
@@ -900,8 +950,14 @@ export default function App() {
         await activateSession(session);
         addLog(`已恢复 ${session.client.user?.username ?? "用户"} 的会话`, "ok");
       } catch (error) {
-        await clearStoredSession();
-        addLog(`自动恢复失败：${errorMessage(error)}`, "err");
+        // 只有凭证本身失效才清除本地会话；断网/超时/服务端 500 必须保留，
+        // 否则一次普通网络抖动就逼用户重新登录。
+        if (isSessionInvalidError(error)) {
+          await clearStoredSession();
+          addLog(`已保存的会话已失效：${errorMessage(error)}，请重新登录`, "err");
+        } else {
+          addLog(`自动恢复失败（已保留登录信息，可重试）：${errorMessage(error)}`, "err");
+        }
       } finally {
         if (!cancelled) setRestoring(false);
       }
@@ -1023,7 +1079,7 @@ export default function App() {
         {currentChannel && !isVoice ? (
           <ChatView
             channelName={currentChannel.displayName ?? currentChannel.name ?? "私信"}
-            messages={chat}
+            messages={searchResults ?? chat}
             draft={draft}
             pending={pending}
             actionFor={actionFor}
@@ -1052,9 +1108,10 @@ export default function App() {
             onCancelReply={() => setReplyingTo(null)}
             onLoadOlder={loadOlderMessages}
             onToggleSearch={() => {
+              // 搜索结果与时间线隔离：关闭只丢弃快照，原时间线还在，无需重新拉取。
               setSearching((value) => !value);
               setSearchQuery("");
-              if (searching) void openChannel(currentChannel);
+              setSearchResults(null);
             }}
             onSearchQuery={setSearchQuery}
             onSearch={searchMessages}
@@ -1106,6 +1163,34 @@ function sortAndMapMessages(
   return [...messages]
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((message) => toChatMessage(message, myUserId, resolveMessage, resolveUser));
+}
+
+/**
+ * 校验用户输入的用户名：空视为未填（由调用方生成），非空必须 3-32 位字母数字下划线。
+ * 服务端对非法用户名的拒绝信息晦涩，客户端先拦一道。
+ */
+function normalizeUsername(input: string): string | undefined {
+  const value = input.trim();
+  if (!value) return undefined;
+  if (!/^[A-Za-z0-9_]{3,32}$/.test(value)) {
+    throw new Error("用户名需为 3-32 位字母、数字或下划线。");
+  }
+  return value;
+}
+
+function suggestUsername(): string {
+  const suffix = Math.floor(Math.random() * 36 ** 6).toString(36).padStart(6, "0");
+  return `radio_${suffix}`;
+}
+
+/**
+ * 登录后是否仍需 Onboarding：仅当服务端在登录响应或用户对象里明确标记时才返回 true，
+ * 避免臆测字段；无标记则保持原行为（不打扰已完成初始化的用户）。
+ */
+function sessionRequiresOnboarding(session: StoatSession): boolean {
+  const user = session.client.user as unknown as Record<string, unknown> | undefined;
+  if (user && (user.onboarding === true || user.onboarded === false)) return true;
+  return false;
 }
 
 function mergeMessages(first: ChatMessage[], second: ChatMessage[]): ChatMessage[] {
