@@ -61,9 +61,11 @@ export function WorkspaceHeader({
   instanceLabel,
   voiceActive,
   muted,
+  audioOutput,
   onOpenChannels,
   onOpenServerSettings,
   onToggleMute,
+  onToggleAudioOutput,
   onLeaveVoice,
   onOpenActivity,
   onLogout,
@@ -74,9 +76,11 @@ export function WorkspaceHeader({
   instanceLabel: string;
   voiceActive: boolean;
   muted: boolean;
+  audioOutput?: "speaker" | "earpiece";
   onOpenChannels: () => void;
   onOpenServerSettings: () => void;
   onToggleMute: () => void;
+  onToggleAudioOutput?: () => void;
   onLeaveVoice: () => void;
   onOpenActivity: () => void;
   onLogout: () => void;
@@ -113,6 +117,15 @@ export function WorkspaceHeader({
       </Pressable>
       {voiceActive ? (
         <>
+          {onToggleAudioOutput ? (
+            <Pressable
+              onPress={onToggleAudioOutput}
+              accessibilityLabel={audioOutput === "earpiece" ? "当前为听筒，点击切换免提" : "当前为免提，点击切换听筒"}
+              style={[styles.headerIconButton, { backgroundColor: audioOutput === "earpiece" ? PALETTE.amber : PALETTE.white }]}
+            >
+              <Text style={styles.headerIconText}>{audioOutput === "earpiece" ? "👂" : "📢"}</Text>
+            </Pressable>
+          ) : null}
           <Pressable
             onPress={onToggleMute}
             style={[styles.headerIconButton, { backgroundColor: muted ? PALETTE.amber : PALETTE.cyan }]}
@@ -531,15 +544,15 @@ export function WorkspaceActionModal({
                 <BrutalInput
                   value={friendName}
                   onChangeText={setFriendName}
-                  placeholder="username#0000"
+                  placeholder="alex 或 alex#1234"
                   autoCapitalize="none"
                   autoCorrect={false}
                 />
-                <Text style={styles.friendHint}>使用 Web 端个人资料中的完整用户名，例如 alex#1234。</Text>
+                <Text style={styles.friendHint}>输入用户的用户名，例如 alex 或带识别码的 alex#1234。</Text>
                 <BrutalButton
                   label="发送好友请求"
                   tone="violet"
-                  disabled={!friendName.includes("#")}
+                  disabled={!friendName.trim()}
                   busy={busy}
                   onPress={() => onAddFriend(friendName.trim())}
                 />

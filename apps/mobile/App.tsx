@@ -81,7 +81,8 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [voice, setVoice] = useState<VoiceSnapshot>({ state: "idle", members: [] });
+  const [hasMore, setHasMore] = useState(true);
+  const [voice, setVoice] = useState<VoiceSnapshot>({ state: "idle", members: [], audioOutput: "speaker" });
 
   const sessionRef = useRef<StoatSession | null>(null);
   const apiRef = useRef<ReturnType<typeof createStoatApi> | null>(null);
@@ -99,7 +100,12 @@ export default function App() {
   const servers = useMemo<SDKServer[]>(() => (sessionRef.current ? [...sessionRef.current.client.servers.values()] : []), [revision, screen]);
   const channels = useMemo<SDKChannel[]>(() => (currentServer ? [...currentServer.channels] : []), [currentServer, revision]);
   const directMessages = useMemo<SDKChannel[]>(
-    () => (sessionRef.current ? [...sessionRef.current.client.channels.values()].filter((channel) => channel.type === "DirectMessage") : []),
+    () =>
+      sessionRef.current
+        ? [...sessionRef.current.client.channels.values()].filter(
+            (channel) => channel.type === "DirectMessage" || channel.type === "Group"
+          )
+        : [],
     [revision, screen]
   );
   const socialUsers = useMemo<SDKUser[]>(
@@ -159,7 +165,7 @@ export default function App() {
     } catch (error) {
       console.warn("session cleanup failed", error);
     }
-    setVoice({ state: "idle", members: [] });
+    setVoice({ state: "idle", members: [], audioOutput: "speaker" });
     resetWorkspace();
   };
 
@@ -227,6 +233,7 @@ export default function App() {
     sdk.on("serverDelete", refreshCollections);
     sdk.on("serverLeave", refreshCollections);
     sdk.on("serverMemberJoin", refreshCollections);
+    sdk.on("serverMemberLeave", refreshCollections);
     sdk.on("userUpdate", refreshCollections);
 
     return () => {
@@ -246,6 +253,7 @@ export default function App() {
       sdk.off("serverDelete", refreshCollections);
       sdk.off("serverLeave", refreshCollections);
       sdk.off("serverMemberJoin", refreshCollections);
+      sdk.off("serverMemberLeave", refreshCollections);
       sdk.off("userUpdate", refreshCollections);
     };
   };
@@ -327,6 +335,11 @@ export default function App() {
     setBusy(true);
     await clearStoredSession();
     await closeSession();
+    setEmail("");
+    setPassword("");
+    setInvite("");
+    setUsername("");
+    setAuthError(undefined);
     setScreen("auth");
     setBusy(false);
   };
@@ -427,7 +440,6 @@ export default function App() {
   };
 
   const selectServer = async (server: SDKServer) => {
-    if (voiceActive) await voiceRef.current?.leave();
     setServerId(server.id);
     setChannelId(null);
     channelIdRef.current = null;
@@ -438,7 +450,6 @@ export default function App() {
   };
 
   const goHome = async () => {
-    if (voiceActive) await voiceRef.current?.leave();
     resetWorkspace();
   };
 
@@ -586,7 +597,6 @@ export default function App() {
 
   const openChannel = async (channel: SDKChannel) => {
     const loadId = ++channelLoadRef.current;
-    if (voiceActive && channelIdRef.current !== channel.id) await voiceRef.current?.leave();
     channelIdRef.current = channel.id;
     setChannelId(channel.id);
     setChannelDrawer(false);
@@ -597,10 +607,12 @@ export default function App() {
     setActionFor(null);
     setSearching(false);
     setSearchQuery("");
-    if (channel.type !== "TextChannel" || channel.isVoice) return;
+    setHasMore(true);
+    if (channel.isVoice && channel.type !== "DirectMessage") return;
     try {
       const messages = await channel.fetchMessages({ limit: 50 });
       if (loadId !== channelLoadRef.current || channel.id !== channelIdRef.current) return;
+      if (messages.length < 50) setHasMore(false);
       const resolveUser = (id: string) => sessionRef.current?.client.users.get(id);
       setChat(sortAndMapMessages(messages, sessionRef.current?.client.user?.id, resolveMessage, resolveUser));
       setTimeout(() => chatScroll.current?.scrollToEnd({ animated: false }), 60);
@@ -612,10 +624,11 @@ export default function App() {
   const loadOlderMessages = async () => {
     const channel = currentChannel;
     const before = chat[0]?.id;
-    if (!channel || !before || loadingOlder) return;
+    if (!channel || !before || loadingOlder || !hasMore) return;
     setLoadingOlder(true);
     try {
       const older = await channel.fetchMessages({ limit: 50, before });
+      if (older.length < 50) setHasMore(false);
       const resolveUser = (id: string) => sessionRef.current?.client.users.get(id);
       setChat((items) => mergeMessages(sortAndMapMessages(older, sessionRef.current?.client.user?.id, resolveMessage, resolveUser), items));
     } catch (error) {
@@ -710,6 +723,7 @@ export default function App() {
         attachments: readyAttachments.map((item) => item.id),
         ...(replyTarget ? { replies: [{ id: replyTarget.id, mention: true }] } : {}),
       });
+      if (channel.id !== channelIdRef.current) return;
       setChat((items) =>
         items.some((item) => item.id === message.id)
           ? items
@@ -967,9 +981,11 @@ export default function App() {
         instanceLabel={instanceLabel}
         voiceActive={voiceActive}
         muted={muted}
+        audioOutput={voice.audioOutput}
         onOpenChannels={() => setChannelDrawer(true)}
         onOpenServerSettings={() => setActionModal("server_settings")}
         onToggleMute={() => void voiceRef.current?.setMuted(!muted)}
+        onToggleAudioOutput={() => void voiceRef.current?.toggleAudioOutput()}
         onLeaveVoice={() => void voiceRef.current?.leave()}
         onOpenActivity={() => setActivityDrawer(true)}
         onLogout={doLogout}
@@ -1001,6 +1017,7 @@ export default function App() {
             busy={busy}
             onJoin={doJoinVoice}
             onCycleVolume={(id) => voiceRef.current?.cycleVolume(id)}
+            onToggleAudioOutput={() => void voiceRef.current?.toggleAudioOutput()}
           />
         ) : null}
         {currentChannel && !isVoice ? (
@@ -1014,6 +1031,7 @@ export default function App() {
             replyingTo={replyingTo}
             busy={busy}
             loadingOlder={loadingOlder}
+            hasMore={hasMore}
             searching={searching}
             searchQuery={searchQuery}
             listRef={chatScroll}
@@ -1056,7 +1074,7 @@ export default function App() {
           setChannelDrawer(false);
           setActionModal("channel");
         }}
-        onDeleteChannel={doDeleteChannel}
+        onDeleteChannel={isServerOwner ? doDeleteChannel : undefined}
         onHome={goHome}
       />
       <WorkspaceActionModal

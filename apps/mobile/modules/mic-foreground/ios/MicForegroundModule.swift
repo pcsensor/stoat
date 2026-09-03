@@ -1,6 +1,7 @@
 import ExpoModulesCore
 import CallKit
 import AVFoundation
+import AudioToolbox
 
 public class MicForegroundModule: Module {
   private let manager = CallKitManager()
@@ -33,6 +34,15 @@ public class MicForegroundModule: Module {
 
     Function("requestIgnoreBatteryOptimization") { () -> Bool in
       return false
+    }
+
+    Function("playTone") { (type: String) -> Bool in
+      if type == "join" {
+        AudioServicesPlaySystemSound(1057)
+      } else {
+        AudioServicesPlaySystemSound(1054)
+      }
+      return true
     }
   }
 

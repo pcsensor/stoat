@@ -59,5 +59,19 @@ class MicForegroundModule : Module() {
       }
       false
     }
+
+    Function("playTone") { type: String ->
+      try {
+        val tg = android.media.ToneGenerator(android.media.AudioManager.STREAM_VOICE_CALL, 75)
+        if (type == "join") {
+          tg.startTone(android.media.ToneGenerator.TONE_PROP_BEEP2, 140)
+        } else {
+          tg.startTone(android.media.ToneGenerator.TONE_PROP_PROMPT, 140)
+        }
+        true
+      } catch (e: Throwable) {
+        false
+      }
+    }
   }
 }

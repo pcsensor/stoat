@@ -44,6 +44,7 @@ export function ChatView({
   replyingTo,
   busy,
   loadingOlder,
+  hasMore = true,
   searching,
   searchQuery,
   listRef,
@@ -74,6 +75,7 @@ export function ChatView({
   replyingTo: ReplyingTarget | null;
   busy: boolean;
   loadingOlder: boolean;
+  hasMore?: boolean;
   searching: boolean;
   searchQuery: string;
   listRef: RefObject<FlatList<ChatMessage> | null>;
@@ -99,7 +101,7 @@ export function ChatView({
   const { keyboardHeight } = useKeyboard();
   const [activeImageUrl, setActiveImageUrl] = useState<string | null>(null);
 
-  const bottomInset = Platform.OS === "android" ? keyboardHeight : Math.max(0, keyboardHeight - insets.bottom);
+  const bottomInset = Platform.OS === "android" ? 0 : Math.max(0, keyboardHeight - insets.bottom);
 
   useEffect(() => {
     if (keyboardHeight > 0) {
@@ -145,10 +147,10 @@ export function ChatView({
           contentContainerStyle={styles.list}
           ListHeaderComponent={
             <BrutalButton
-              label={loadingOlder ? "读取中…" : "↑ 读取更早消息"}
+              label={loadingOlder ? "读取中…" : !hasMore ? "已显示全部历史消息" : "↑ 读取更早消息"}
               compact
               tone="paper"
-              disabled={loadingOlder}
+              disabled={loadingOlder || !hasMore}
               onPress={onLoadOlder}
               style={styles.loadOlder}
             />

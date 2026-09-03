@@ -12,6 +12,7 @@ interface MicForegroundNative {
   setMuted?(muted: boolean): boolean;
   isBatteryOptimizationIgnored(): boolean;
   requestIgnoreBatteryOptimization(): boolean;
+  playTone?(type: "join" | "leave"): boolean;
 }
 
 interface MicForegroundEvents {
@@ -71,6 +72,14 @@ export const micForeground = {
     if (!native) return false;
     try {
       return native.requestIgnoreBatteryOptimization();
+    } catch {
+      return false;
+    }
+  },
+  playTone(type: "join" | "leave"): boolean {
+    if (!native || !native.playTone) return false;
+    try {
+      return native.playTone(type);
     } catch {
       return false;
     }

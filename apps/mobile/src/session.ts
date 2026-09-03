@@ -27,7 +27,8 @@ export class StoatSession {
 
   private static async fromAuth(instance: InstanceConfig, auth: LoginResponse, signal?: AbortSignal): Promise<StoatSession> {
     const client = new Client({ baseURL: instance.endpoints.api, autoReconnect: true });
-    client.configuration = await client.api.get("/");
+    const rawConfig = await client.api.get("/");
+    client.configuration = { ...(rawConfig as any), ws: instance.endpoints.ws } as any;
     client.useExistingSession(auth);
     // 永久挂载基础错误捕获，彻底杜绝 EventEmitter 在 Release 模式下的 Unhandled 'error' event 崩溃
     client.on("error", (error) => {

@@ -11,6 +11,7 @@ export function VoiceView({
   busy,
   onJoin,
   onCycleVolume,
+  onToggleAudioOutput,
 }: {
   channel: SDKChannel;
   snapshot: VoiceSnapshot;
@@ -18,6 +19,7 @@ export function VoiceView({
   busy: boolean;
   onJoin: (channel: SDKChannel) => void;
   onCycleVolume: (id: string) => void;
+  onToggleAudioOutput?: () => void;
 }) {
   const active = snapshot.state === "connecting" || snapshot.state === "connected" || snapshot.state === "reconnecting";
   if (!active) {
@@ -44,6 +46,22 @@ export function VoiceView({
         <View style={[styles.pulse, snapshot.state === "reconnecting" && { backgroundColor: PALETTE.amber }]}><Text style={styles.pulseText}>{snapshot.state === "connected" ? "●" : "…"}</Text></View>
       </View>
       {snapshot.state === "reconnecting" ? <BrutalCard color={PALETTE.amber} style={styles.banner}><Text style={styles.bannerText}>网络信号不稳，正在尝试重新加入房间。</Text></BrutalCard> : null}
+      <View style={styles.outputSwitchCard}>
+        <View style={styles.outputSwitchCopy}>
+          <Text style={styles.outputSwitchTitle}>通话声音输出</Text>
+          <Text style={styles.outputSwitchDesc}>
+            {snapshot.audioOutput === "earpiece" ? "当前为听筒模式（贴耳收听）" : "当前为免提模式（扬声器公放）"}
+          </Text>
+        </View>
+        {onToggleAudioOutput ? (
+          <BrutalButton
+            label={snapshot.audioOutput === "earpiece" ? "切为免提 📢" : "切为听筒 👂"}
+            compact
+            tone={snapshot.audioOutput === "earpiece" ? "acid" : "cyan"}
+            onPress={onToggleAudioOutput}
+          />
+        ) : null}
+      </View>
       {inviteCode ? (
         <Pressable onPress={() => Share.share({ message: `Radio 服务器邀请码：${inviteCode}` })} style={({ pressed }) => [styles.invite, pressed && styles.pressed]}>
           <View><Text style={styles.inviteKicker}>邀请朋友</Text><Text style={styles.inviteCode}>{inviteCode}</Text></View>
@@ -52,25 +70,51 @@ export function VoiceView({
       ) : null}
       <Text style={styles.membersTitle}>房间成员</Text>
       <View style={styles.membersGrid}>
-        {snapshot.members.map((member, index) => (
-          <Pressable
-            key={member.id}
-            disabled={member.me}
-            onPress={() => onCycleVolume(member.id)}
-            style={({ pressed }) => [styles.memberCard, { backgroundColor: member.speaking ? PALETTE.acid : member.me ? PALETTE.violet : index % 2 ? PALETTE.white : PALETTE.cyan }, member.me && styles.memberMe, pressed && styles.pressed]}
-          >
-            <View style={[styles.avatar, member.speaking && styles.avatarSpeaking]}><Text style={styles.avatarText}>{member.name.slice(0, 2).toUpperCase()}</Text></View>
-            <View style={styles.memberCopy}>
-              <Text style={[styles.memberName, member.me && styles.memberNameLight]} numberOfLines={1}>{member.name}</Text>
-              <Text style={[styles.memberState, member.me && styles.memberNameLight]}>{member.speaking ? "正在说话" : member.selfMuted ? "麦克风已静音" : member.me ? "这是你" : "正在收听"}</Text>
-            </View>
-            {!member.me && member.volume < 1 ? <View style={styles.volumeTag}><Text style={styles.volumeText}>{Math.round(member.volume * 100)}%</Text></View> : null}
-          </Pressable>
-        ))}
+        {snapshot.members.map((member, index) => {
+          const isLight = member.me && !member.speaking;
+          return (
+            <Pressable
+              key={member.id}
+              disabled={member.me}
+              onPress={() => onCycleVolume(member.id)}
+              style={({ pressed }) => [
+                styles.memberCard,
+                {
+                  backgroundColor: member.speaking
+                    ? PALETTE.acid
+                    : member.me
+                    ? PALETTE.violet
+                    : index % 2
+                    ? PALETTE.white
+                    : PALETTE.cyan,
+                },
+                member.me && !member.speaking && styles.memberMe,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={[styles.avatar, member.speaking && styles.avatarSpeaking]}>
+                <Text style={styles.avatarText}>{member.name.slice(0, 2).toUpperCase()}</Text>
+              </View>
+              <View style={styles.memberCopy}>
+                <Text style={[styles.memberName, isLight && styles.memberNameLight]} numberOfLines={1}>
+                  {member.name}
+                </Text>
+                <Text style={[styles.memberState, isLight && styles.memberNameLight]}>
+                  {member.speaking ? "正在说话" : member.selfMuted ? "麦克风已静音" : member.me ? "这是你" : "正在收听"}
+                </Text>
+              </View>
+              {!member.me && member.volume < 1 ? (
+                <View style={styles.volumeTag}>
+                  <Text style={styles.volumeText}>{Math.round(member.volume * 100)}%</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          );
+        })}
       </View>
       <BrutalCard color={PALETTE.paperDeep} noShadow style={styles.tipCard}>
         <Text style={styles.tipTitle}>操作提示</Text>
-        <Text style={styles.tipBody}>点击远端成员：100% → 50% → 20% → 100%。静音和挂断按钮在顶部工具栏。</Text>
+        <Text style={styles.tipBody}>点击远端成员：100% → 50% → 20% → 100%。声音输出、静音和挂断可在顶部或本卡片切换。</Text>
       </BrutalCard>
     </ScrollView>
   );
@@ -95,6 +139,20 @@ const styles = StyleSheet.create({
   pulseText: { color: PALETTE.ink, fontSize: 29, fontWeight: "900" },
   banner: { marginBottom: 14, padding: 11 },
   bannerText: { color: PALETTE.ink, fontWeight: "900" },
+  outputSwitchCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: BORDER,
+    borderColor: PALETTE.ink,
+    backgroundColor: PALETTE.white,
+    padding: 12,
+    marginBottom: 16,
+    ...SMALL_SHADOW,
+  },
+  outputSwitchCopy: { flex: 1, marginRight: 10 },
+  outputSwitchTitle: { color: PALETTE.ink, fontSize: 13, fontWeight: "900" },
+  outputSwitchDesc: { color: PALETTE.muted, fontSize: 11, fontWeight: "700", marginTop: 2 },
   invite: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: BORDER, borderColor: PALETTE.ink, backgroundColor: PALETTE.pink, padding: 12, marginRight: 5, marginBottom: 20, ...SMALL_SHADOW },
   inviteKicker: { color: PALETTE.ink, fontSize: 9, fontWeight: "900", letterSpacing: 1.2, textTransform: "uppercase" },
   inviteCode: { color: PALETTE.ink, fontSize: 22, fontWeight: "900", marginTop: 2 },

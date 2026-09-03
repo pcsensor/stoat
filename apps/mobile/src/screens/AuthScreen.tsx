@@ -101,7 +101,7 @@ export function AuthScreen(props: AuthScreenProps) {
             onChangeText={props.onPassword}
             placeholder="••••••••"
             secureTextEntry
-            onSubmitEditing={props.onSubmit}
+            onSubmitEditing={props.mode === "login" ? props.onSubmit : undefined}
             onFocus={() => scrollRef.current?.scrollTo({ y: 280, animated: true })}
           />
 
@@ -120,6 +120,7 @@ export function AuthScreen(props: AuthScreenProps) {
                 value={props.username}
                 onChangeText={props.onUsername}
                 placeholder="留空则自动生成"
+                onSubmitEditing={props.onSubmit}
                 onFocus={() => scrollRef.current?.scrollTo({ y: 420, animated: true })}
               />
             </>

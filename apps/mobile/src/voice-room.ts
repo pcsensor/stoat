@@ -1,8 +1,11 @@
+import { Platform } from "react-native";
 import { AudioSession } from "@livekit/react-native";
 import { Room, RoomEvent, Track, createLocalAudioTrack, type RemoteParticipant } from "livekit-client";
 import { ApiError, type InstanceConfig } from "@radio/core";
 import { joinCall } from "@radio/voice";
 import { micForeground } from "../modules/mic-foreground/src";
+
+export type AudioOutputDevice = "speaker" | "earpiece";
 
 export interface VoiceMember {
   id: string;
@@ -20,6 +23,7 @@ export interface VoiceSnapshot {
   state: VoiceConnectionState;
   members: VoiceMember[];
   error?: string;
+  audioOutput: AudioOutputDevice;
 }
 
 interface VoiceControllerOptions {
@@ -47,7 +51,9 @@ export class VoiceRoomController {
   private reconnectAttempt = 0;
   private systemCallStarted = false;
   private wanted = false;
-  private snapshot: VoiceSnapshot = { state: "idle", members: [] };
+  private userMuted = false;
+  private audioOutput: AudioOutputDevice = "speaker";
+  private snapshot: VoiceSnapshot = { state: "idle", members: [], audioOutput: "speaker" };
 
   constructor(options: VoiceControllerOptions) {
     this.options = options;
@@ -84,10 +90,13 @@ export class VoiceRoomController {
     this.stopSystemCall();
     this.channelId = null;
     this.remoteMuted.clear();
-    this.setSnapshot({ state: "idle", members: [] });
+    this.userMuted = false;
+    this.audioOutput = "speaker";
+    this.setSnapshot({ state: "idle", members: [], audioOutput: "speaker" });
   }
 
   async setMuted(muted: boolean): Promise<void> {
+    this.userMuted = muted;
     const room = this.room;
     if (!room) return;
     await room.localParticipant.setMicrophoneEnabled(!muted);
@@ -100,10 +109,31 @@ export class VoiceRoomController {
    * 的 CXSetMutedCallAction 形成事件回环。
    */
   async setMutedFromSystem(muted: boolean): Promise<void> {
+    this.userMuted = muted;
     const room = this.room;
     if (!room) return;
     await room.localParticipant.setMicrophoneEnabled(!muted);
     this.emitMembers();
+  }
+
+  async setAudioOutput(output: AudioOutputDevice): Promise<void> {
+    this.audioOutput = output;
+    try {
+      if (Platform.OS === "android") {
+        await AudioSession.selectAudioOutput(output);
+      } else {
+        await AudioSession.selectAudioOutput(output === "speaker" ? "force_speaker" : "default");
+      }
+      this.options.onLog?.(output === "speaker" ? "已切换为免提（扬声器）" : "已切换为听筒模式", "info");
+    } catch (err) {
+      console.warn("[voice-room] setAudioOutput error:", err);
+    }
+    this.emitMembers();
+  }
+
+  async toggleAudioOutput(): Promise<void> {
+    const next = this.audioOutput === "speaker" ? "earpiece" : "speaker";
+    await this.setAudioOutput(next);
   }
 
   cycleVolume(identity: string): void {
@@ -132,15 +162,25 @@ export class VoiceRoomController {
   private async performConnect(operation: number): Promise<void> {
     const channelId = this.channelId;
     if (!channelId) throw new VoiceOperationCancelled();
-    this.setSnapshot({ state: "connecting", members: [] });
+    this.setSnapshot({ state: "connecting", members: [], audioOutput: this.audioOutput });
     const abortController = new AbortController();
     this.connectAbort = abortController;
+    let microphone: Awaited<ReturnType<typeof createLocalAudioTrack>> | null = null;
     try {
       // Android 必须在 Activity 仍可见时启动 microphone FGS；iOS 同时在此向
       // CallKit 注册持续通话。这样用户在连接阶段立即锁屏也不会错过保活窗口。
       const systemCallWasStarted = this.systemCallStarted;
       const systemCallStarted = this.startSystemCall();
       await AudioSession.startAudioSession();
+      try {
+        if (Platform.OS === "android") {
+          await AudioSession.selectAudioOutput(this.audioOutput);
+        } else {
+          await AudioSession.selectAudioOutput(this.audioOutput === "speaker" ? "force_speaker" : "default");
+        }
+      } catch (audioErr) {
+        console.warn("[voice-room] selectAudioOutput initial error:", audioErr);
+      }
       this.assertCurrent(operation);
       let call: Awaited<ReturnType<typeof joinCall>>;
       try {
@@ -168,10 +208,14 @@ export class VoiceRoomController {
       this.attachListeners(room);
       await room.connect(call.url, call.token);
       this.assertCurrent(operation);
-      const microphone = await createLocalAudioTrack({ echoCancellation: true, noiseSuppression: true });
+      microphone = await createLocalAudioTrack({ echoCancellation: true, noiseSuppression: true });
       this.assertCurrent(operation);
       await room.localParticipant.publishTrack(microphone, { source: Track.Source.Microphone });
       this.assertCurrent(operation);
+      if (this.userMuted) {
+        await room.localParticipant.setMicrophoneEnabled(false);
+        micForeground.setMuted(true);
+      }
       if (!systemCallWasStarted) {
         this.options.onLog?.(
           systemCallStarted ? "系统级通话服务已启动（已开启防锁屏休眠与断网保护）" : "系统级通话服务启动失败，语音仍保持连接",
@@ -180,12 +224,17 @@ export class VoiceRoomController {
       }
       this.reconnectAttempt = 0;
       this.startMemberPoll();
-      this.setSnapshot({ state: "connected", members: this.buildMembers() });
+      this.setSnapshot({ state: "connected", members: this.buildMembers(), audioOutput: this.audioOutput });
     } catch (error) {
+      if (microphone) {
+        try {
+          microphone.stop();
+        } catch {}
+      }
       await this.disposeRoom();
       if (error instanceof VoiceOperationCancelled) return;
       const message = error instanceof Error ? error.message : String(error);
-      this.setSnapshot({ state: "error", members: [], error: message });
+      this.setSnapshot({ state: "error", members: [], error: message, audioOutput: this.audioOutput });
       if (this.wanted && isRetriableVoiceError(error)) {
         this.scheduleReconnect();
       } else {
@@ -201,10 +250,12 @@ export class VoiceRoomController {
 
   private attachListeners(room: Room): void {
     room.on(RoomEvent.ParticipantConnected, (participant) => {
+      micForeground.playTone("join");
       this.options.onLog?.(`成员 ${participant.name || participant.identity} 加入语音`, "ok");
       this.emitMembers();
     });
     room.on(RoomEvent.ParticipantDisconnected, (participant) => {
+      micForeground.playTone("leave");
       this.options.onLog?.(`成员 ${participant.name || participant.identity} 离开语音`);
       this.remoteMuted.delete(participant.identity);
       this.emitMembers();
@@ -269,7 +320,8 @@ export class VoiceRoomController {
     if (this.room && this.snapshot.state === "connected") return;
     this.clearReconnectTimer();
     await this.disposeRoom();
-    await this.connect(this.operation);
+    const operation = ++this.operation;
+    await this.connect(operation);
   }
 
   private async disposeRoom(): Promise<void> {
@@ -343,7 +395,7 @@ export class VoiceRoomController {
 
   private emitMembers(): void {
     if (!this.room) return;
-    this.setSnapshot({ state: this.snapshot.state, members: this.buildMembers() });
+    this.setSnapshot({ state: this.snapshot.state, members: this.buildMembers(), audioOutput: this.audioOutput });
   }
 
   private buildMembers(): VoiceMember[] {
@@ -389,9 +441,13 @@ export class VoiceRoomController {
     };
   }
 
-  private setSnapshot(snapshot: VoiceSnapshot): void {
-    this.snapshot = snapshot;
-    for (const listener of this.listeners) listener(snapshot);
+  private setSnapshot(snapshot: Partial<VoiceSnapshot> & { state: VoiceConnectionState; members: VoiceMember[] }): void {
+    const fullSnapshot: VoiceSnapshot = {
+      audioOutput: this.audioOutput,
+      ...snapshot,
+    };
+    this.snapshot = fullSnapshot;
+    for (const listener of this.listeners) listener(fullSnapshot);
   }
 }
 
