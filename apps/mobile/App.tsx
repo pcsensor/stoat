@@ -358,7 +358,8 @@ export default function App() {
       setAuthError(message);
       addLog(message, "err");
       await closeSession();
-      await clearStoredSession();
+      // 失败的手动登录不代表之前保存的会话已经失效；例如输错密码或短暂断网
+      // 都不应让用户丢失可恢复的凭证。自动恢复路径会在确认凭证失效时清理它。
     } finally {
       setBusy(false);
     }
@@ -634,15 +635,21 @@ export default function App() {
   };
 
   const openChannel = async (channel: SDKChannel) => {
+    const isChangingChannel = channelIdRef.current !== channel.id;
     const loadId = ++channelLoadRef.current;
     channelIdRef.current = channel.id;
     setChannelId(channel.id);
     setChannelDrawer(false);
     setChat([]);
     setPending([]);
+    setDraft("");
     setReplyingTo(null);
-    setInviteCode("");
-    inviteChannelRef.current = null;
+    setLoadingOlder(false);
+    // 同一语音频道离开后再次加入时复用已有邀请码；切换频道才清空。
+    if (isChangingChannel) {
+      setInviteCode("");
+      inviteChannelRef.current = null;
+    }
     setActionFor(null);
     setSearching(false);
     setSearchQuery("");
@@ -667,16 +674,18 @@ export default function App() {
     const channel = currentChannel;
     const before = chat[0]?.id;
     if (!channel || !before || loadingOlder || !hasMore) return;
+    const loadId = channelLoadRef.current;
     setLoadingOlder(true);
     try {
       const older = await channel.fetchMessages({ limit: 50, before });
+      if (loadId !== channelLoadRef.current || channel.id !== channelIdRef.current) return;
       if (older.length < 50) setHasMore(false);
       const resolveUser = (id: string) => sessionRef.current?.client.users.get(id);
       setChat((items) => mergeMessages(sortAndMapMessages(older, sessionRef.current?.client.user?.id, resolveMessage, resolveUser), items));
     } catch (error) {
       addLog(`读取更早消息失败：${errorMessage(error)}`, "err");
     } finally {
-      setLoadingOlder(false);
+      if (loadId === channelLoadRef.current) setLoadingOlder(false);
     }
   };
 
@@ -684,9 +693,11 @@ export default function App() {
     const channel = currentChannel;
     const query = searchQuery.trim();
     if (!channel || !query) return;
+    const loadId = channelLoadRef.current;
     setBusy(true);
     try {
       const messages = await channel.search({ query, limit: 50, sort: "Latest" });
+      if (loadId !== channelLoadRef.current || channel.id !== channelIdRef.current) return;
       const resolveUser = (id: string) => sessionRef.current?.client.users.get(id);
       setSearchResults(sortAndMapMessages(messages, sessionRef.current?.client.user?.id, resolveMessage, resolveUser));
       addLog(`搜索到 ${messages.length} 条消息`, "ok");
@@ -756,6 +767,7 @@ export default function App() {
     const text = draft.trim();
     const previousPending = readyAttachments;
     const replyTarget = replyingTo;
+    const channelIdAtSend = channel.id;
     setDraft("");
     setPending([]);
     setReplyingTo(null);
@@ -781,9 +793,12 @@ export default function App() {
       );
       setTimeout(() => chatScroll.current?.scrollToEnd({ animated: true }), 60);
     } catch (error) {
-      setDraft(text);
-      setPending(previousPending);
-      setReplyingTo(replyTarget);
+      // 发送请求完成前若已切换频道，不能把旧频道草稿带到新频道。
+      if (channelIdAtSend === channelIdRef.current) {
+        setDraft(text);
+        setPending(previousPending);
+        setReplyingTo(replyTarget);
+      }
       addLog(`发送失败：${errorMessage(error)}`, "err");
     }
   };

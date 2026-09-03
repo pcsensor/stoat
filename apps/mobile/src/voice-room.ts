@@ -4,6 +4,7 @@ import { Room, RoomEvent, Track, createLocalAudioTrack, type RemoteParticipant }
 import type { InstanceConfig } from "@radio/core";
 import { isAlreadyConnectedError, isRetriableVoiceError, joinCall } from "@radio/voice";
 import { micForeground } from "../modules/mic-foreground/src";
+import { canReuseVoiceRoom, type VoiceConnectionState } from "./voice-connection-state";
 
 export type AudioOutputDevice = "speaker" | "earpiece";
 
@@ -16,7 +17,7 @@ export interface VoiceMember {
   volume: number;
 }
 
-export type VoiceConnectionState = "idle" | "connecting" | "connected" | "reconnecting" | "error";
+export type { VoiceConnectionState } from "./voice-connection-state";
 export type VoiceListener = (state: VoiceSnapshot) => void;
 
 export interface VoiceSnapshot {
@@ -320,8 +321,9 @@ export class VoiceRoomController {
       await this.activeConnect.catch(() => undefined);
       return;
     }
-    // SDK 内部正在自愈则等待它；彻底断开（room 已无或 SDK 已放弃）才重建。
-    if (this.room && this.sdkHealing) return;
+    // 系统分享页、权限页等都会带来 active 生命周期；健康 Room 不能因此重连。
+    // SDK 内部正在自愈时同样保留，只有它已放弃的断开 Room 才由这里重建。
+    if (canReuseVoiceRoom(Boolean(this.room), this.snapshot.state, this.sdkHealing)) return;
     this.sdkHealing = false;
     this.clearReconnectTimer();
     await this.disposeRoom();
